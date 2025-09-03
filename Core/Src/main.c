@@ -24,7 +24,11 @@
 #include "NRF24.h"
 #include "NRF24_conf.h"
 #include "NRF24_reg_addresses.h"
-#include "stdio.h"
+#include "stdio.h" //snprintf를 사용해 uart로 메시지 디버깅 출력
+#include "string.h" //memcpy함수를 사용하기 위해(volatile 변수를 복사)
+/*memcpy함수: 특정 메모리 영역의 내용을 다른 메모리 영역으로 복사하는 함수로 sting.h 또는 memory.h에 정의됨,
+void *memcpy(void *dest, const void *src, size_t count);의 형태로 사용됨*/
+
 
 
 /* USER CODE END Includes */
@@ -46,32 +50,44 @@
 
 /* Private variables ---------------------------------------------------------*/
 ADC_HandleTypeDef hadc1;
+DMA_HandleTypeDef hdma_adc1;
 
 SPI_HandleTypeDef hspi1;
+
+TIM_HandleTypeDef htim2;
 
 UART_HandleTypeDef huart2;
 
 /* USER CODE BEGIN PV */
+// ADC DMA 버퍼 (DMA가 이곳에 ADC 결과값을 자동으로 저장합니다), 항상 메모리에서 업데이트(컴파일러 최적화x)
+volatile uint16_t adc_buffer[3] = {0};	//ADC가 변환한 x, y, z값을 DMA가 담는 버퍼 - x, y, z 3개
+
+// ADC 변환 완료 '깃발' (ISR이 Main 루프에게 데이터를 알리는 신호)
+volatile uint8_t adc_conversion_complete = 0;	//ISR이 끝나면 이 변수 값을 1로, 항상 메모리에서 업데이트
 
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
+static void MX_DMA_Init(void);
 static void MX_ADC1_Init(void);
 static void MX_SPI1_Init(void);
 static void MX_USART2_UART_Init(void);
+static void MX_TIM2_Init(void);
 /* USER CODE BEGIN PFP */
 
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+//nRF24L01 송신 주소
+uint8_t tx_address[5] = {0xE7, 0xE7, 0xE7, 0xE7, 0xE7};
+
 //함수 선언
 void nrf24_transmitter_setup(void);
-uint32_t ReadADC_Channel(uint32_t Channel);
+void transmit_sensor_data(void);
 
-uint8_t tx_address[5] = {0xE7, 0xE7, 0xE7, 0xE7, 0xE7};
 
 /* USER CODE END 0 */
 
@@ -104,12 +120,20 @@ int main(void)
 
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
+  MX_DMA_Init();
   MX_ADC1_Init();
   MX_SPI1_Init();
   MX_USART2_UART_Init();
+  MX_TIM2_Init();
   /* USER CODE BEGIN 2 */
   nrf24_init();
   nrf24_transmitter_setup();
+
+  //ADC 캘리브레이션: MCU내부의 미세 오차를 보정
+  HAL_ADCEx_Calibration_Start(&hadc1);
+
+  //타이머 인터럽트 시작 20ms마다
+  HAL_TIM_Base_Start_IT(&htim2);
 
   /* USER CODE END 2 */
 
@@ -117,30 +141,11 @@ int main(void)
   /* USER CODE BEGIN WHILE */
   while (1)
   {
-	  // x,y,z값 읽기
-	  uint16_t x = ReadADC_Channel(ADC_CHANNEL_10);   // 0~4095
-	  uint16_t y = ReadADC_Channel(ADC_CHANNEL_11);
-	  uint16_t z = ReadADC_Channel(ADC_CHANNEL_12);
+	  if(adc_conversion_complete){	//DMA가 메모리 저장을 완료하여 콜백함수에 의해 adc_conversion_complete = 1이 되어 조건이 참이된다면
+		  transmit_sensor_data();
+	  }
 
-	  // 6바이트 이진 패킹
-	  uint8_t payload[6];
-	  payload[0] = (uint8_t)( x & 0xFF);      // X LSB
-	  payload[1] = (uint8_t)(x >> 8);       // X MSB (12bit)
-	  payload[2] = (uint8_t)( y & 0xFF);      // Y LSB
-	  payload[3] = (uint8_t)(y >> 8);       // Y MSB
-	  payload[4] = (uint8_t)( z & 0xFF);      // Z LSB
-	  payload[5] = (uint8_t)(z >> 8);       // Z MSB
-
-	  // 무선 전송 (6바이트)
-	  nrf24_transmit(payload, 6);
-
-	  // 4) UART 디버그: ASCII 숫자만 보기
-	  char dbg[64];
-	  int dlen = snprintf(dbg, sizeof(dbg),"X:%u  Y:%u  Z:%u\r\n", x, y, z);
-
-	  HAL_UART_Transmit(&huart2, (uint8_t*)dbg, dlen, HAL_MAX_DELAY);
-
-	  HAL_Delay(20);
+	  __WFI();
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
@@ -215,12 +220,12 @@ static void MX_ADC1_Init(void)
   /** Common config
   */
   hadc1.Instance = ADC1;
-  hadc1.Init.ScanConvMode = ADC_SCAN_DISABLE;
+  hadc1.Init.ScanConvMode = ADC_SCAN_ENABLE;
   hadc1.Init.ContinuousConvMode = DISABLE;
   hadc1.Init.DiscontinuousConvMode = DISABLE;
   hadc1.Init.ExternalTrigConv = ADC_SOFTWARE_START;
   hadc1.Init.DataAlign = ADC_DATAALIGN_RIGHT;
-  hadc1.Init.NbrOfConversion = 1;
+  hadc1.Init.NbrOfConversion = 3;
   if (HAL_ADC_Init(&hadc1) != HAL_OK)
   {
     Error_Handler();
@@ -230,7 +235,25 @@ static void MX_ADC1_Init(void)
   */
   sConfig.Channel = ADC_CHANNEL_10;
   sConfig.Rank = ADC_REGULAR_RANK_1;
-  sConfig.SamplingTime = ADC_SAMPLETIME_1CYCLE_5;
+  sConfig.SamplingTime = ADC_SAMPLETIME_239CYCLES_5;
+  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure Regular Channel
+  */
+  sConfig.Channel = ADC_CHANNEL_11;
+  sConfig.Rank = ADC_REGULAR_RANK_2;
+  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure Regular Channel
+  */
+  sConfig.Channel = ADC_CHANNEL_12;
+  sConfig.Rank = ADC_REGULAR_RANK_3;
   if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
   {
     Error_Handler();
@@ -280,6 +303,51 @@ static void MX_SPI1_Init(void)
 }
 
 /**
+  * @brief TIM2 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM2_Init(void)
+{
+
+  /* USER CODE BEGIN TIM2_Init 0 */
+
+  /* USER CODE END TIM2_Init 0 */
+
+  TIM_ClockConfigTypeDef sClockSourceConfig = {0};
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+
+  /* USER CODE BEGIN TIM2_Init 1 */
+
+  /* USER CODE END TIM2_Init 1 */
+  htim2.Instance = TIM2;
+  htim2.Init.Prescaler = 7200-1;
+  htim2.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim2.Init.Period = 200-1;
+  htim2.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim2.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  if (HAL_TIM_Base_Init(&htim2) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
+  if (HAL_TIM_ConfigClockSource(&htim2, &sClockSourceConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim2, &sMasterConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM2_Init 2 */
+
+  /* USER CODE END TIM2_Init 2 */
+
+}
+
+/**
   * @brief USART2 Initialization Function
   * @param None
   * @retval None
@@ -309,6 +377,22 @@ static void MX_USART2_UART_Init(void)
   /* USER CODE BEGIN USART2_Init 2 */
 
   /* USER CODE END USART2_Init 2 */
+
+}
+
+/**
+  * Enable DMA controller clock
+  */
+static void MX_DMA_Init(void)
+{
+
+  /* DMA controller clock enable */
+  __HAL_RCC_DMA1_CLK_ENABLE();
+
+  /* DMA interrupt init */
+  /* DMA1_Channel1_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA1_Channel1_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(DMA1_Channel1_IRQn);
 
 }
 
@@ -364,40 +448,78 @@ void nrf24_transmitter_setup(void)
     nrf24_tx_pwr(3);
     nrf24_data_rate(_1mbps);
     nrf24_open_tx_pipe(tx_address);  //파이프 0에 tx_address를 열어 송신 대상 지정
-
-
-   // nrf24_dpl(enable);               //dpl활성화
-     // nrf24_set_rx_dpl(0, enable);
 }
 
-uint32_t ReadADC_Channel(uint32_t Channel)
+void transmit_sensor_data(void){
+	adc_conversion_complete = 0;
+
+	uint16_t local_adc_buffer[3];
+
+	//adc_buffer값을 local_adc_buffer에 복사
+	__disable_irq(); //복사중 모든 인터럽트 중지
+	memcpy(local_adc_buffer, (void*)adc_buffer, sizeof(adc_buffer));
+	__enable_irq(); //인터럽트 허용
+/*memcpy함수는 메모리 특정 영역을 다른 영역으로 복사한다
+ *함수 기본형태-void *memcpy(붙여넣을 메모리 시작주소, 복사할 내용이 있는 메모리 시작주소, sizeof(원본);
+ *함수
+ */
+
+	uint16_t x = local_adc_buffer[0];
+	uint16_t y = local_adc_buffer[1];
+	uint16_t z = local_adc_buffer[2];
+
+	//6바이트 2진 패킹
+	uint8_t payload[6];
+	payload[0] = (uint8_t)(x & 0xff);	//x하위8비트
+	payload[1] = (uint8_t)(x >> 8);		//x상위8비트 시프트
+	payload[2] = (uint8_t)(y & 0xff);	//y하위8비트
+	payload[3] = (uint8_t)(x >> 8);		//y상위8비트
+	payload[4] = (uint8_t)(x & 0xff);	//z하위8비트
+	payload[5] = (uint8_t)(x >> 8);		//z상위8비트
+
+	//최종 데이터 발송
+	nrf24_transmit(payload, 6);
+
+	//uart디버깅
+	char dbg[64];
+	int dlen = snprintf(dbg, sizeof(dbg), "X: %u | Y: %u | Z: %u\r\n", x, y, z);
+	HAL_UART_Transmit(&huart2, (uint8_t*)dbg, dlen, 100);
+
+}
+
+//타이머가 만료될 때마다 호출되는 콜백함수 20ms주기
+void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 {
-    ADC_ChannelConfTypeDef sConfig = {0};
-
-    // 설정할 ADC 채널 지정
-    sConfig.Channel = Channel;
-    sConfig.Rank = ADC_REGULAR_RANK_1; // 단일 변환이므로 Rank 1
-    sConfig.SamplingTime = ADC_SAMPLETIME_239CYCLES_5; // 샘플링 시간 (필요에 따라 조절)
-
-    // ADC 채널 구성
-    if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
+    // 이벤트가 발생한 타이머가 TIM2인지 확인
+    if (htim->Instance == TIM2)
     {
-        Error_Handler(); // 설정 실패 시 에러 핸들러 호출
-    }
-
-    // ADC 변환 시작 (폴링 방식)
-    HAL_ADC_Start(&hadc1);
-
-    // 변환 완료 대기
-    if (HAL_ADC_PollForConversion(&hadc1, HAL_MAX_DELAY) == HAL_OK)
-    {
-        return HAL_ADC_GetValue(&hadc1); // 값 반환
-    }
-    else
-    {
-        return 0; // 변환 실패 시 0 반환 또는 에러 처리
+    	//3개의 ADC값을 변환해서 그 결과를 adc_buffer에 DMA로 저장 시작
+        HAL_ADC_Start_DMA(&hadc1, (uint32_t*)adc_buffer, 3);
     }
 }
+
+//위 HAL_TIM_PeriodElapsedCallback 콜백함수에 의해 ADC와 DMA가 3개의 채널 변환 및 메모리 저장 완료 후 콜백, 데이터수집 완료
+void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef *hadc)
+{
+    // 이벤트가 발생한 ADC가 ADC1인지 확인
+    if (hadc->Instance == ADC1)
+    {
+        // Main루프의 if문 조건이 참이 되어 transmit_sensor_data함수호출
+        adc_conversion_complete = 1;
+    }
+}
+
+//ADC변환 중 오류가 발생했을 때 자동으로 호출, DMA전송을 중지
+void HAL_ADC_ErrorCallback(ADC_HandleTypeDef *hadc)
+{
+    if (hadc->Instance == ADC1)
+    {
+        // ADC 오류 발생 시, 진행 중이던 DMA를 안전하게 중지
+        // 다음 타이머 주기(20ms 후)에 HAL_ADC_Start_DMA가 다시 호출되며 자동으로 복구를 시도함
+        HAL_ADC_Stop_DMA(&hadc1);
+    }
+}
+
 /* USER CODE END 4 */
 
 /**
