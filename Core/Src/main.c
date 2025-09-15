@@ -24,6 +24,7 @@
 #include "NRF24.h"
 #include "NRF24_conf.h"
 #include "NRF24_reg_addresses.h"
+#include "voice_proto.h"
 #include "stdio.h" //snprintf를 사용해 uart로 메시지 디버깅 출력
 #include "string.h" //memcpy함수를 사용하기 위해(volatile 변수를 복사)
 /*memcpy함수: 특정 메모리 영역의 내용을 다른 메모리 영역으로 복사하는 함수로 sting.h 또는 memory.h에 정의됨,
@@ -57,6 +58,7 @@ SPI_HandleTypeDef hspi1;
 TIM_HandleTypeDef htim2;
 
 UART_HandleTypeDef huart2;
+UART_HandleTypeDef huart3;
 
 /* USER CODE BEGIN PV */
 // ADC DMA 버퍼 (DMA가 이곳에 ADC 결과값을 자동으로 저장합니다), 항상 메모리에서 업데이트(컴파일러 최적화x)
@@ -75,6 +77,7 @@ static void MX_ADC1_Init(void);
 static void MX_SPI1_Init(void);
 static void MX_USART2_UART_Init(void);
 static void MX_TIM2_Init(void);
+static void MX_USART3_UART_Init(void);
 /* USER CODE BEGIN PFP */
 
 /* USER CODE END PFP */
@@ -125,6 +128,7 @@ int main(void)
   MX_SPI1_Init();
   MX_USART2_UART_Init();
   MX_TIM2_Init();
+  MX_USART3_UART_Init();
   /* USER CODE BEGIN 2 */
   nrf24_init();
   nrf24_transmitter_setup();
@@ -377,6 +381,39 @@ static void MX_USART2_UART_Init(void)
   /* USER CODE BEGIN USART2_Init 2 */
 
   /* USER CODE END USART2_Init 2 */
+
+}
+
+/**
+  * @brief USART3 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_USART3_UART_Init(void)
+{
+
+  /* USER CODE BEGIN USART3_Init 0 */
+
+  /* USER CODE END USART3_Init 0 */
+
+  /* USER CODE BEGIN USART3_Init 1 */
+
+  /* USER CODE END USART3_Init 1 */
+  huart3.Instance = USART3;
+  huart3.Init.BaudRate = 115200;
+  huart3.Init.WordLength = UART_WORDLENGTH_8B;
+  huart3.Init.StopBits = UART_STOPBITS_1;
+  huart3.Init.Parity = UART_PARITY_NONE;
+  huart3.Init.Mode = UART_MODE_TX_RX;
+  huart3.Init.HwFlowCtl = UART_HWCONTROL_NONE;
+  huart3.Init.OverSampling = UART_OVERSAMPLING_16;
+  if (HAL_UART_Init(&huart3) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN USART3_Init 2 */
+
+  /* USER CODE END USART3_Init 2 */
 
 }
 
