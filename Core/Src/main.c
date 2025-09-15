@@ -335,7 +335,7 @@ static void MX_GPIO_Init(void)
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(CE_Pin_GPIO_Port, CE_Pin_Pin, GPIO_PIN_RESET);
 
-  /*Configure GPIO pin : CSN_Pin_Pin */
+  /*Configure GPIO pin : C9_Pin_Pin */
   GPIO_InitStruct.Pin = CSN_Pin_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
