@@ -25,23 +25,26 @@
 #include "NRF24_conf.h"
 #include "NRF24_reg_addresses.h"
 #include "voice_proto.h"
+#include "stdbool.h"
+#include "stdlib.h"//절대값(abs)
 #include "stdio.h" //snprintf를 사용해 uart로 메시지 디버깅 출력
 #include "string.h" //memcpy함수를 사용하기 위해(volatile 변수를 복사)
 /*memcpy함수: 특정 메모리 영역의 내용을 다른 메모리 영역으로 복사하는 함수로 sting.h 또는 memory.h에 정의됨,
 void *memcpy(void *dest, const void *src, size_t count);의 형태로 사용됨*/
-
-
-
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN PTD */
-
+typedef enum { ST_IDLE=0, ST_JOYSTICK, ST_VOICE } ctrl_state_t;
+typedef struct { uint16_t x,y,z; } triplet_t;
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-
+#define ADC_MAX 4020
+#define ADC_MIN 0
+#define ADC_NEU 2010
+#define ADC_DEAD_ZONE 200
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -61,12 +64,28 @@ UART_HandleTypeDef huart2;
 UART_HandleTypeDef huart3;
 
 /* USER CODE BEGIN PV */
+//nRF24L01 송신 주소
+uint8_t tx_address[5] = {0xE7, 0xE7, 0xE7, 0xE7, 0xE7};
+
 // ADC DMA 버퍼 (DMA가 이곳에 ADC 결과값을 자동으로 저장합니다), 항상 메모리에서 업데이트(컴파일러 최적화x)
 volatile uint16_t adc_buffer[3] = {0};	//ADC가 변환한 x, y, z값을 DMA가 담는 버퍼 - x, y, z 3개
 
 // ADC 변환 완료 '깃발' (ISR이 Main 루프에게 데이터를 알리는 신호)
 volatile uint8_t adc_conversion_complete = 0;	//ISR이 끝나면 이 변수 값을 1로, 항상 메모리에서 업데이트
 
+// ===== 음성 & 상태 머신 =====
+static uint8_t rx3_byte = 0;
+static volatile ctrl_state_t g_state = ST_IDLE;
+static uint8_t last_cmd = 0x03; // 기본 정지(STOP)
+
+static const triplet_t VOICE_MAP[6] = {
+/*0*/ {ADC_NEU,ADC_NEU,ADC_NEU},
+/*1 FWD  */ {ADC_NEU,3000,ADC_NEU},
+/*2 BACK */ {ADC_NEU,1000,ADC_NEU},
+/*3 STOP */ {ADC_NEU,ADC_NEU,ADC_NEU},
+/*4 LEFT */ {1000,ADC_NEU,ADC_NEU},
+/*5 RIGHT*/ {3000,ADC_NEU,ADC_NEU},
+};
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -79,19 +98,19 @@ static void MX_USART2_UART_Init(void);
 static void MX_TIM2_Init(void);
 static void MX_USART3_UART_Init(void);
 /* USER CODE BEGIN PFP */
+//함수 선언
+static bool joystick_is_active(int x, int y, int z);
+void nrf24_transmitter_setup(void);
+void transmit_sensor_data(void);
 
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-//nRF24L01 송신 주소
-uint8_t tx_address[5] = {0xE7, 0xE7, 0xE7, 0xE7, 0xE7};
-
-//함수 선언
-void nrf24_transmitter_setup(void);
-void transmit_sensor_data(void);
-
-
+int __io_putchar(int ch) {
+    HAL_UART_Transmit(&huart2, (uint8_t*)&ch, 1, HAL_MAX_DELAY);
+    return ch;
+}
 /* USER CODE END 0 */
 
 /**
@@ -132,6 +151,10 @@ int main(void)
   /* USER CODE BEGIN 2 */
   nrf24_init();
   nrf24_transmitter_setup();
+
+  // 음성 통신 프로토콜 초기화 및 UART 수신 인터럽트 시작
+  Voice_Init();
+  HAL_UART_Receive_IT(&huart3, &rx3_byte, 1);
 
   //ADC 캘리브레이션: MCU내부의 미세 오차를 보정
   HAL_ADCEx_Calibration_Start(&hadc1);
@@ -476,6 +499,12 @@ static void MX_GPIO_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
+static bool joystick_is_active(int x, int y, int z) {
+    return (abs(x - ADC_NEU) > ADC_DEAD_ZONE) ||
+           (abs(y - ADC_NEU) > ADC_DEAD_ZONE) ||
+           (abs(z - ADC_NEU) > ADC_DEAD_ZONE);
+}
+
 void nrf24_transmitter_setup(void)
 {
     nrf24_defaults();                //레지스터 기본값으로 초기화
@@ -500,38 +529,69 @@ void nrf24_transmitter_setup(void)
 void transmit_sensor_data(void){
 	adc_conversion_complete = 0;
 
-	uint16_t local_adc_buffer[3];
+	// 1. 최신 ADC 값 안전하게 복사
+	uint16_t x,y,z;
+	__disable_irq();
+	x = adc_buffer[0]; y = adc_buffer[1]; z = adc_buffer[2];
+	__enable_irq();
 
-	//adc_buffer값을 local_adc_buffer에 복사
-	__disable_irq(); //복사중 모든 인터럽트 중지
-	memcpy(local_adc_buffer, (void*)adc_buffer, sizeof(adc_buffer));
-	__enable_irq(); //인터럽트 허용
-/*memcpy함수는 메모리 특정 영역을 다른 영역으로 복사한다
- *함수 기본형태-void *memcpy(붙여넣을 메모리 시작주소, 복사할 내용이 있는 메모리 시작주소, sizeof(원본);
- *함수
- */
+	// 2. 조이스틱 활성 상태 판정
+	bool active = joystick_is_active((int)x,(int)y,(int)z);
 
-	uint16_t x = local_adc_buffer[0];
-	uint16_t y = local_adc_buffer[1];
-	uint16_t z = local_adc_buffer[2];
+	// 3. (조이스틱이 중립일 때만) 음성 프레임 처리
+	if (!active && Voice_FrameAvailable()){
+		voice_frame_t vf;
+		__disable_irq();
+		bool ok = Voice_TryPopFrame(&vf);
+		__enable_irq();
+		if (ok && vf.cmd >= 0x01 && vf.cmd <= 0x05){
+		  last_cmd = vf.cmd;
+		  g_state  = ST_VOICE; // 음성 모드 진입
+		}
+	}
 
-	//6바이트 2진 패킹
+	// 4. 상태머신으로 이번 주기 전송값 결정
+	uint16_t tx_x = ADC_NEU, tx_y = ADC_NEU, tx_z = ADC_NEU;
+
+	switch (g_state)
+	{
+		case ST_IDLE:
+		  if (active) g_state = ST_JOYSTICK;
+		  break;
+		case ST_JOYSTICK:
+		  if (!active){
+			g_state = ST_IDLE;
+		  } else {
+			tx_x = x; tx_y = y; tx_z = z;
+		  }
+		  break;
+		case ST_VOICE:
+		default:
+		  if (active){
+			g_state = ST_JOYSTICK;
+			tx_x = x; tx_y = y; tx_z = z;
+		  } else {
+			triplet_t t = VOICE_MAP[last_cmd];
+			tx_x = t.x; tx_y = t.y; tx_z = t.z;
+		  }
+		  break;
+	}
+
+	// 5. 6바이트 2진 패킹 (버그 수정됨)
 	uint8_t payload[6];
-	payload[0] = (uint8_t)(x & 0xff);	//x하위8비트
-	payload[1] = (uint8_t)(x >> 8);		//x상위8비트 시프트
-	payload[2] = (uint8_t)(y & 0xff);	//y하위8비트
-	payload[3] = (uint8_t)(x >> 8);		//y상위8비트
-	payload[4] = (uint8_t)(x & 0xff);	//z하위8비트
-	payload[5] = (uint8_t)(x >> 8);		//z상위8비트
+	payload[0] = (uint8_t)(tx_x & 0xff);	//x하위8비트
+	payload[1] = (uint8_t)(tx_x >> 8);		//x상위8비트
+	payload[2] = (uint8_t)(tx_y & 0xff);	//y하위8비트
+	payload[3] = (uint8_t)(tx_y >> 8);		//y상위8비트
+	payload[4] = (uint8_t)(tx_z & 0xff);	//z하위8비트
+	payload[5] = (uint8_t)(tx_z >> 8);		//z상위8비트
 
 	//최종 데이터 발송
 	nrf24_transmit(payload, 6);
 
 	//uart디버깅
-	char dbg[64];
-	int dlen = snprintf(dbg, sizeof(dbg), "X: %u | Y: %u | Z: %u\r\n", x, y, z);
-	HAL_UART_Transmit(&huart2, (uint8_t*)dbg, dlen, 100);
-
+	const char* s = (g_state==ST_JOYSTICK)?"JOY":(g_state==ST_VOICE)?"VOICE":"IDLE";
+	printf("STATE:[%s] -> TX: X:%u Y:%u Z:%u\r\n", s, tx_x, tx_y, tx_z);
 }
 
 //타이머가 만료될 때마다 호출되는 콜백함수 20ms주기
