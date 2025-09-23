@@ -530,10 +530,14 @@ void transmit_sensor_data(void){
 	adc_conversion_complete = 0;
 
 	// 1. 최신 ADC 값 안전하게 복사
-	uint16_t x,y,z;
+	uint16_t local_buffer[3];
 	__disable_irq();
-	x = adc_buffer[0]; y = adc_buffer[1]; z = adc_buffer[2];
+	memcpy(local_buffer, (void*)adc_buffer, sizeof(local_buffer));
 	__enable_irq();
+
+	uint16_t x = local_buffer[0];
+	uint16_t y = local_buffer[1];
+	uint16_t z = local_buffer[2];
 
 	// 2. 조이스틱 활성 상태 판정
 	bool active = joystick_is_active((int)x,(int)y,(int)z);
@@ -587,11 +591,25 @@ void transmit_sensor_data(void){
 	payload[5] = (uint8_t)(tx_z >> 8);		//z상위8비트
 
 	//최종 데이터 발송
-	nrf24_transmit(payload, 6);
+	if (nrf24_transmit(payload, 6) != 0) {
+	    printf("ERROR: NRF24 transmission failed\r\n");
+	}
 
 	//uart디버깅
 	const char* s = (g_state==ST_JOYSTICK)?"JOY":(g_state==ST_VOICE)?"VOICE":"IDLE";
 	printf("STATE:[%s] -> TX: X:%u Y:%u Z:%u\r\n", s, tx_x, tx_y, tx_z);
+}
+
+// UART3 수신 완료 콜백 (음성 데이터 처리)
+void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
+{
+    if (huart == &huart3) {
+        // 음성 프로토콜에 수신된 바이트 전달
+        Voice_ProcessByte(rx3_byte);
+
+        // 다음 바이트 수신을 위해 인터럽트 재시작
+        HAL_UART_Receive_IT(&huart3, &rx3_byte, 1);
+    }
 }
 
 //타이머가 만료될 때마다 호출되는 콜백함수 20ms주기
