@@ -76,6 +76,9 @@ static void MX_SPI1_Init(void);
 static void MX_USART2_UART_Init(void);
 static void MX_TIM2_Init(void);
 /* USER CODE BEGIN PFP */
+//함수 선언
+void nrf24_transmitter_setup(void);
+void transmit_sensor_data(void);
 
 /* USER CODE END PFP */
 
@@ -83,11 +86,6 @@ static void MX_TIM2_Init(void);
 /* USER CODE BEGIN 0 */
 //nRF24L01 송신 주소
 uint8_t tx_address[5] = {0xE7, 0xE7, 0xE7, 0xE7, 0xE7};
-
-//함수 선언
-void nrf24_transmitter_setup(void);
-void transmit_sensor_data(void);
-
 
 /* USER CODE END 0 */
 
