@@ -483,9 +483,9 @@ void transmit_sensor_data(void){
 	payload[0] = (uint8_t)(x & 0xff);	//x하위8비트
 	payload[1] = (uint8_t)(x >> 8);		//x상위8비트 시프트
 	payload[2] = (uint8_t)(y & 0xff);	//y하위8비트
-	payload[3] = (uint8_t)(x >> 8);		//y상위8비트
-	payload[4] = (uint8_t)(x & 0xff);	//z하위8비트
-	payload[5] = (uint8_t)(x >> 8);		//z상위8비트
+	payload[3] = (uint8_t)(y >> 8);		//y상위8비트
+	payload[4] = (uint8_t)(z & 0xff);	//z하위8비트
+	payload[5] = (uint8_t)(z >> 8);		//z상위8비트
 
 	//최종 데이터 발송
 	nrf24_transmit(payload, 6);
