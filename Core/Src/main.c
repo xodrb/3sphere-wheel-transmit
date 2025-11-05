@@ -41,10 +41,10 @@ typedef struct { uint16_t x,y,z; } triplet_t;
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-#define ADC_MAX 4020
+#define ADC_MAX 4090
 #define ADC_MIN 0
-#define ADC_NEU 2010
-#define ADC_DEAD_ZONE 200
+#define ADC_NEU 2045
+#define ADC_DEAD_ZONE 300
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -80,11 +80,11 @@ static uint8_t last_cmd = 0x03; // 기본 정지(STOP)
 
 static const triplet_t VOICE_MAP[6] = {
 /*0*/ {ADC_NEU,ADC_NEU,ADC_NEU},
-/*1 FWD  */ {ADC_NEU,3000,ADC_NEU},
-/*2 BACK */ {ADC_NEU,1000,ADC_NEU},
+/*1 FWD  */ {ADC_NEU,4090,ADC_NEU},
+/*2 BACK */ {ADC_NEU,0,ADC_NEU},
 /*3 STOP */ {ADC_NEU,ADC_NEU,ADC_NEU},
-/*4 LEFT */ {1000,ADC_NEU,ADC_NEU},
-/*5 RIGHT*/ {3000,ADC_NEU,ADC_NEU},
+/*4 LEFT */ {0,ADC_NEU,ADC_NEU},
+/*5 RIGHT*/ {4090,ADC_NEU,ADC_NEU},
 };
 /* USER CODE END PV */
 
@@ -472,6 +472,7 @@ static void MX_GPIO_Init(void)
   __HAL_RCC_GPIOC_CLK_ENABLE();
   __HAL_RCC_GPIOD_CLK_ENABLE();
   __HAL_RCC_GPIOA_CLK_ENABLE();
+  __HAL_RCC_GPIOB_CLK_ENABLE();
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(CSN_Pin_GPIO_Port, CSN_Pin_Pin, GPIO_PIN_RESET);
@@ -492,6 +493,12 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(CE_Pin_GPIO_Port, &GPIO_InitStruct);
+
+  /*Configure GPIO pin : PB9 */
+  GPIO_InitStruct.Pin = GPIO_PIN_9;
+  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
   /* USER CODE BEGIN MX_GPIO_Init_2 */
 
@@ -518,7 +525,7 @@ void nrf24_transmitter_setup(void)
     nrf24_clear_max_rt();
     nrf24_stop_listen();             //수신모드 비활성화 하여 송신 전용 모드로 전환
 
-    nrf24_set_channel(40);           //무선 채널 40번으로 설정
+    nrf24_set_channel(77);           //무선 채널 40번으로 설정
     nrf24_auto_ack_all(disable);     //자동 ack기능 off=>단순 송신만 수행
     nrf24_set_payload_size(6);      //한번에 전송할 페이로드 크기 최대 32바이트
     nrf24_tx_pwr(3);
