@@ -73,6 +73,9 @@ volatile uint16_t adc_buffer[3] = {0};	//ADC가 변환한 x, y, z값을 DMA가 �
 // ADC 변환 완료 '깃발' (ISR이 Main 루프에게 데이터를 알리는 신호)
 volatile uint8_t adc_conversion_complete = 0;	//ISR이 끝나면 이 변수 값을 1로, 항상 메모리에서 업데이트
 
+volatile uint32_t g_stop_until_ms = 0;
+volatile uint32_t last_pb8_press_time = 0;
+
 // ===== 음성 & 상태 머신 =====
 static uint8_t rx3_byte = 0;
 static volatile ctrl_state_t g_state = ST_IDLE;
@@ -494,11 +497,21 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(CE_Pin_GPIO_Port, &GPIO_InitStruct);
 
+  /*Configure GPIO pin : PB8 */
+  GPIO_InitStruct.Pin = GPIO_PIN_8;
+  GPIO_InitStruct.Mode = GPIO_MODE_IT_FALLING;
+  GPIO_InitStruct.Pull = GPIO_PULLUP;
+  HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+
   /*Configure GPIO pin : PB9 */
   GPIO_InitStruct.Pin = GPIO_PIN_9;
   GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+
+  /* EXTI interrupt init*/
+  HAL_NVIC_SetPriority(EXTI9_5_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(EXTI9_5_IRQn);
 
   /* USER CODE BEGIN MX_GPIO_Init_2 */
 
@@ -546,6 +559,23 @@ void transmit_sensor_data(void){
 	uint16_t y = local_adc_buffer[1];
 	uint16_t z = local_adc_buffer[2];
 
+	uint32_t current_time = HAL_GetTick();
+
+	if(g_stop_until_ms !=0){
+		if(current_time < g_stop_until_ms){
+			x = ADC_NEU;
+			y = ADC_NEU;
+			z = ADC_NEU;
+
+			g_state = ST_IDLE;
+			last_cmd = 0x03;
+		}
+		else{
+			g_stop_until_ms = 0;
+		}
+	}
+
+	if(g_stop_until_ms == 0){
 	// 2. 조이스틱 활성 상태 판정
 	bool active = joystick_is_active((int)x,(int)y,(int)z);
 
@@ -587,15 +617,17 @@ void transmit_sensor_data(void){
 		  }
 		  break;
 	}
+	x = tx_x; y = tx_y; z = tx_z;
+	}
 
 	// 5. 6바이트 2진 패킹 (버그 수정됨)
 	uint8_t payload[6];
-	payload[0] = (uint8_t)(tx_x & 0xff);	//x하위8비트
-	payload[1] = (uint8_t)(tx_x >> 8);		//x상위8비트
-	payload[2] = (uint8_t)(tx_y & 0xff);	//y하위8비트
-	payload[3] = (uint8_t)(tx_y >> 8);		//y상위8비트
-	payload[4] = (uint8_t)(tx_z & 0xff);	//z하위8비트
-	payload[5] = (uint8_t)(tx_z >> 8);		//z상위8비트
+	payload[0] = (uint8_t)(x & 0xff);	//x하위8비트
+	payload[1] = (uint8_t)(x >> 8);		//x상위8비트
+	payload[2] = (uint8_t)(y & 0xff);	//y하위8비트
+	payload[3] = (uint8_t)(y >> 8);		//y상위8비트
+	payload[4] = (uint8_t)(z & 0xff);	//z하위8비트
+	payload[5] = (uint8_t)(z >> 8);		//z상위8비트
 
 	//최종 데이터 발송
 	nrf24_transmit(payload, 6);
@@ -611,8 +643,21 @@ void transmit_sensor_data(void){
 	} else {
 	    s = "IDLE";
 	}
-	int len = snprintf(dbg_buf, sizeof(dbg_buf), "STATE:[%s] -> TX: X:%u Y:%u Z:%u\r\n", s, tx_x, tx_y, tx_z);
+	int len = snprintf(dbg_buf, sizeof(dbg_buf), "STATE:[%s] -> TX: X:%u Y:%u Z:%u\r\n", s, x, y, z);
 	HAL_UART_Transmit(&huart2, (uint8_t*)dbg_buf, len, 50);
+}
+
+void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
+{
+	if(GPIO_Pin == GPIO_PIN_8){
+		uint32_t current_time = HAL_GetTick();
+		if(current_time - last_pb8_press_time < 300){
+			return;
+		}
+		last_pb8_press_time = current_time;
+
+		g_stop_until_ms = current_time + 3000;
+	}
 }
 
 // UART3 수신 완료 콜백 (음성 데이터 처리)
