@@ -525,7 +525,7 @@ void nrf24_transmitter_setup(void)
     nrf24_clear_max_rt();
     nrf24_stop_listen();             //수신모드 비활성화 하여 송신 전용 모드로 전환
 
-    nrf24_set_channel(77);           //무선 채널 40번으로 설정
+    nrf24_set_channel(40);           //무선 채널 40번으로 설정
     nrf24_auto_ack_all(disable);     //자동 ack기능 off=>단순 송신만 수행
     nrf24_set_payload_size(6);      //한번에 전송할 페이로드 크기 최대 32바이트
     nrf24_tx_pwr(3);
